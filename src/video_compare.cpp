@@ -1037,6 +1037,8 @@ void VideoCompare::compare() {
     std::map<Side, bool> step_done;
 
     bool auto_loop_triggered = false;
+    bool playback_finished = false, restart_pending = false;
+    int64_t finished_reference_pts = INT64_MIN;
 
     const int max_digits = std::log10(frame_buffer_size_) + 1;
     const std::string frame_offset_format_str = string_sprintf("%%s%%0%dd/%%0%dd%%s", max_digits, max_digits);
@@ -1057,6 +1059,7 @@ void VideoCompare::compare() {
 
     const bool log_event_routing = env_flag_enabled("VIDEO_COMPARE_LOG_EVENT_ROUTING");
     const bool log_frame_steps = env_flag_enabled("VIDEO_COMPARE_LOG_FRAME_STEP");
+    const bool log_playback = env_flag_enabled("VIDEO_COMPARE_LOG_PLAYBACK");
 
     for (uint64_t frame_number = 0;; ++frame_number) {
       // Set FPS message if needed
@@ -1155,9 +1158,28 @@ void VideoCompare::compare() {
 
       const int shift_right_frames = display_->get_shift_right_frames();
 
-      const bool ordinary_seek = seek_relative != 0.0F || shift_right_frames != 0 || force_seek_current_position;
+      if (display_->get_video_loop_enabled()) auto_loop_triggered = true;
+      const int shown_index = left.frames_.empty() ? 0 : std::max(0, std::min(frame_offset, static_cast<int>(left.frames_.size()) - 1));
+      const bool showing_finished_frame = playback_finished && !left.frames_.empty() && left.frames_[shown_index]->pts == finished_reference_pts;
+      const bool restart_from_beginning = display_->get_restart_from_beginning() ||
+          (restart_pending && display_->get_video_loop_enabled() && display_->get_play()) ||
+          (showing_finished_frame && display_->get_play_toggle_requested()) ||
+          (showing_finished_frame && display_->get_video_loop_enabled() && display_->get_play() && !manual_hold);
+      if (restart_from_beginning) {
+        seek_relative = 0.0F;
+        seek_from_start = true;
+        display_->set_playing(true);
+        restart_pending = false;
+        auto_loop_triggered = true;
+      } else if (display_->get_play_toggle_requested() && display_->get_play() && frame_offset > 0) {
+        // Leaving a buffer loop resumes from the visible picture, not the
+        // exhausted decoder head or the newest cached frame.
+        manual_hold = true;
+      }
+      const bool ordinary_seek = restart_from_beginning || seek_relative != 0.0F || shift_right_frames != 0 || force_seek_current_position;
       const bool step_was_busy = step_scanning || step_seek || pending_steps != 0 || display_->get_frame_navigation_delta() != 0;
       if (ordinary_seek) {
+        playback_finished = restart_pending = false;
         step_scanning = step_seek = manual_hold = manual_history = false;
         step_reference_times.clear();
         step_batch.clear();
@@ -1326,6 +1348,7 @@ void VideoCompare::compare() {
         }
 
         playback_seek::SeekPlan seek_plan = playback_seek::plan_seek(seek_request);
+        if (restart_from_beginning) seek_plan.backward = true;
         if (navigation_seek) {
           seek_plan.backward = true;
           seek_plan.left_target_position = step_seek_time + left.start_time_;
@@ -1349,7 +1372,7 @@ void VideoCompare::compare() {
             std::cout << "SEEK: next_right_position=" << (int)(right_target.target_position * 1000) << " (side=" << side.to_string() << "), backward=" << seek_plan.backward << std::endl;
 #endif
             const bool right_seek_result = demuxers_[side]->seek(right_target.target_position, seek_plan.backward);
-            if (!right_seek_result && (navigation_seek || !seek_plan.backward)) {
+            if (!right_seek_result && (navigation_seek || restart_from_beginning || !seek_plan.backward)) {
               seek_failed = true;
             }
 #ifdef _DEBUG
@@ -1362,7 +1385,7 @@ void VideoCompare::compare() {
         std::cout << "SEEK: next_left_position=" << (int)(seek_plan.left_target_position * 1000) << ", backward=" << seek_plan.backward << std::endl;
 #endif
         const bool left_seek_result = demuxers_[LEFT]->seek(seek_plan.left_target_position, seek_plan.backward);
-        if (!left_seek_result && (navigation_seek || !seek_plan.backward)) {
+        if (!left_seek_result && (navigation_seek || restart_from_beginning || !seek_plan.backward)) {
           seek_failed = true;
         }
 #ifdef _DEBUG
@@ -1371,7 +1394,11 @@ void VideoCompare::compare() {
 
         // Restore all positions if any seek failed
         if (seek_failed) {
-          display_->set_pending_message(navigation_seek ? "Frame stepping requires seekable inputs; seek failed" : "Unable to seek past end of file");
+          if (restart_from_beginning) {
+            display_->set_video_loop_enabled(false);
+            display_->set_playing(false);
+          }
+          display_->set_pending_message(navigation_seek ? "Frame stepping requires seekable inputs; seek failed" : restart_from_beginning ? "Cannot restart this input; whole-video loop disabled" : "Unable to seek past end of file");
 
           demuxers_[LEFT]->seek(seek_plan.left_restore_position, true);
 
@@ -1436,7 +1463,7 @@ void VideoCompare::compare() {
 
           pop_and_reset(left);
 
-          static_right_time_shift = playback_seek::compute_post_seek_static_right_time_shift(static_right_time_shift);
+          if (!restart_from_beginning) static_right_time_shift = playback_seek::compute_post_seek_static_right_time_shift(static_right_time_shift);
 
           // Reset all right videos after seek
           for (auto& pair : side_states) {
@@ -1449,6 +1476,7 @@ void VideoCompare::compare() {
             }
           }
           frame_offset = 0;
+          if (restart_from_beginning && !seek_failed && log_playback) std::cout << "[playback] Restarted from beginning\n";
         }
 
         // After seek, skip fetch/store so a failed next-frame pop cannot null the
@@ -1603,6 +1631,7 @@ void VideoCompare::compare() {
 
       previous_state = current_state;
 #endif
+      bool input_exhausted = false;
       auto pop_frame = [&](SideState& side_state) {
         bool result = static_cast<bool>(side_state.step_next_);
         if (result) side_state.frame_ = std::move(side_state.step_next_);
@@ -1611,6 +1640,8 @@ void VideoCompare::compare() {
         if (result) {
           if (side_state.side_ == LEFT) reference_history.observe(side_state.frame_->pts);
           side_state.decoded_picture_number_++;
+        } else if (converted_frame_queues_[side_state.side_]->is_drained()) {
+          input_exhausted = true;
         }
 
         return result;
@@ -1750,13 +1781,21 @@ void VideoCompare::compare() {
         }
       }
 
-      bool all_stopped = true;
-      for (auto& pair : converted_frame_queues_) {
-        all_stopped = all_stopped && pair.second->is_stopped();
+      // A stopped producer may still have queued frames. Only a failed read
+      // from a drained input marks EOF; pausing near the end must not rewind.
+      const bool end_of_file = input_exhausted && !store_frames;
+      if (end_of_file && !manual_hold && !step_scanning && !step_seek && !left.frames_.empty()) {
+        if (!playback_finished) {
+          playback_finished = true;
+          finished_reference_pts = left.frames_.front()->pts;
+          if (log_playback) std::cout << "[playback] End of inputs\n";
+        }
+        const bool has_video = std::any_of(media_frame_detection_states_.begin(), media_frame_detection_states_.end(), [](const auto& pair) {
+          return pair.second.cardinality.load(std::memory_order_relaxed) == MediaFrameCardinality::MultiFrame;
+        });
+        if (display_->get_video_loop_enabled() && display_->get_play() && has_video) restart_pending = true;
+        else if (display_->get_play()) display_->set_playing(false);
       }
-
-      const bool no_activity = !skip_update && !adjusting && !store_frames;
-      const bool end_of_file = no_activity && all_stopped;
       const bool buffer_is_full = left.frames_.size() == frame_buffer_size_ && right_ptr->frames_.size() == frame_buffer_size_;
 
       const int last_common_frame_index = static_cast<int>(std::min(left.frames_.size(), right_ptr->frames_.size()) - 1);
@@ -1899,7 +1938,7 @@ void VideoCompare::compare() {
           }
 
           // enter in-buffer playback once if buffer is full or EOF reached
-          if (auto_loop_mode_ != Display::Loop::Off && !auto_loop_triggered && (buffer_is_full || end_of_file)) {
+          if (auto_loop_mode_ != Display::Loop::Off && !display_->get_video_loop_enabled() && !auto_loop_triggered && (buffer_is_full || end_of_file)) {
             display_->set_buffer_play_loop_mode(auto_loop_mode_);
 
             auto_loop_triggered = true;

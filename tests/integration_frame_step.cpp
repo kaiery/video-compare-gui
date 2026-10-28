@@ -75,6 +75,75 @@ static std::pair<std::string, std::string> picture(Output& output) {
   return {read_file(line.substr(0, comma)), read_file(line.substr(comma + 2, and_pos - comma - 2))};
 }
 
+// Reuses the same headless input/clock probes to exercise full input restarts.
+static void expect_start(Output& output) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+  do {
+    const double t = position(output);
+    if (t >= 0 && t < 0.2) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  } while (std::chrono::steady_clock::now() < deadline);
+  throw std::runtime_error("Restart did not return to the beginning");
+}
+static void expect_paused(Output& output) {
+  const double before = position(output); // Processes preceding SDL key events.
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  if (std::abs(position(output) - before) > 0.0011) throw std::runtime_error("Playback did not remain paused");
+}
+static void exercise_video_loop(Output& output, const std::vector<double>& times, size_t buffer_size) {
+  if (std::getenv("FRAME_STEP_AUTO_BUFFER_LOOP")) {
+    key(SDLK_F5); expect_position(output, times[times.size()/3]);
+    key(SDLK_F5); // Disabling full looping must not reactivate startup buffering.
+  }
+  output.wait_line(0, "[playback] End of inputs");
+  expect_position(output, times.back());
+  auto offset = output.size();
+  key(SDLK_SPACE); // EOF must restart on the first press.
+  output.wait_line(offset, "[playback] Restarted from beginning");
+  expect_start(output);
+  expect_position(output, times[times.size() - 3]);
+  key(SDLK_SPACE); expect_paused(output); // Queues may be stopped but not drained.
+  offset = output.size();
+  key(SDLK_SPACE);
+  output.wait_line(offset, "[playback] End of inputs");
+  expect_position(output, times.back());
+  if (output.count_since(offset, "[playback] Restarted from beginning")) throw std::runtime_error("Resuming a near-EOF pause unexpectedly rewound");
+  key(SDLK_HOME); expect_start(output);
+  expect_position(output, times[times.size()/3]);
+  offset = output.size();
+  key(SDLK_HOME); // Mid-video restart, regardless of cache capacity.
+  output.wait_line(offset, "[playback] Restarted from beginning");
+  expect_start(output);
+  key(SDLK_SPACE); expect_paused(output);
+  key(SDLK_F5); // Enabling full looping resumes a paused input.
+  offset = output.size();
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    output.wait_line(offset, "[playback] End of inputs");
+    const auto line = output.wait_line(offset, "[playback] Restarted from beginning");
+    (void)line;
+    expect_start(output);
+    offset = output.size();
+  }
+  key(SDLK_SPACE); expect_paused(output); // Pause must work with looping enabled.
+  key(SDLK_F5); expect_paused(output); // Turning looping off preserves pause.
+  offset = output.size();
+  key(SDLK_SPACE);
+  output.wait_line(offset, "[playback] End of inputs");
+  expect_position(output, times.back());
+  expect_paused(output);
+  if (output.count_since(offset, "[playback] Restarted from beginning")) throw std::runtime_error("Looping continued after F5 disabled it");
+  if (buffer_size > 1) {
+    key(SDLK_PERIOD);
+    expect_position(output, times[times.size() - 2]);
+    key(SDLK_SPACE); // Leave a buffered loop at an older displayed frame.
+    expect_position(output, times.back());
+    expect_paused(output);
+  }
+  offset = output.size();
+  key(SDLK_SPACE);
+  output.wait_line(offset, "[playback] Restarted from beginning");
+  expect_start(output);
+}
 int main(int argc, char** argv) {
   if (argc < 5) { std::cerr << "Usage: integration_frame_step BUFFER_SIZE PTS_FILE LEFT RIGHT [RIGHT...]\n"; return 2; }
   std::vector<double> times;
@@ -85,13 +154,16 @@ int main(int argc, char** argv) {
   SDL_setenv("SDL_RENDER_DRIVER", "software", 1);
 #ifdef _WIN32
   _putenv_s("VIDEO_COMPARE_LOG_FRAME_STEP", "1");
+  _putenv_s("VIDEO_COMPARE_LOG_PLAYBACK", "1");
 #else
   setenv("VIDEO_COMPARE_LOG_FRAME_STEP", "1", 1);
+  setenv("VIDEO_COMPARE_LOG_PLAYBACK", "1", 1);
 #endif
   VideoCompareConfig config;
   config.window_size = std::make_tuple(320, 180);
   config.frame_buffer_size = std::stoul(argv[1]);
   config.disable_auto_filters = true;
+  if (std::getenv("FRAME_STEP_AUTO_BUFFER_LOOP")) config.auto_loop_mode = Display::Loop::ForwardOnly;
   config.left.file_name = argv[3];
   if (std::getenv("FRAME_STEP_TRUST_PTS")) av_dict_set(&config.left.decoder_options, "trust_dec_pts", "1", 0);
   for (int i = 4; i < argc; ++i) {
@@ -113,6 +185,9 @@ int main(int argc, char** argv) {
     VideoCompare compare(config);
     driver = std::thread([&] {
       try {
+        if (std::getenv("FRAME_STEP_TEST_VIDEO_LOOP")) {
+          exercise_video_loop(output, times, config.frame_buffer_size);
+        } else {
         expect_position(output, times.back()); // Run naturally through EOF.
         const auto boundary_start = output.size();
         key(SDLK_d); // An extra forward step must hold the last frame and pause.
@@ -145,6 +220,7 @@ int main(int argc, char** argv) {
         expect_position(output, times.back());
         if (argc > 5) { key(SDLK_TAB); std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
         key(SDLK_a); expect_position(output, times[times.size() - 2]);
+        }
       } catch (const std::exception& e) { error = e.what(); }
       SDL_Event quit{}; quit.type = SDL_QUIT; SDL_PushEvent(&quit);
     });
@@ -162,6 +238,10 @@ int main(int argc, char** argv) {
               << " p95_ms=" << reverse_ms[(reverse_ms.size()-1)*95/100] << " max_ms=" << reverse_ms.back() << '\n';
   }
   if (!error.empty()) { std::cerr << "FAIL: " << error << '\n' << output.data; return 1; }
+  if (std::getenv("FRAME_STEP_TEST_VIDEO_LOOP")) {
+    std::cout << "PASS: Space at EOF, Home, two whole-video loops, pause/resume and loop disable; buffer=" << config.frame_buffer_size << '\n';
+    return 0;
+  }
   std::cout << "PASS: " << times.size() << " frames EOF-to-start-to-EOF; A/D and Shift aliases, buffer=" << config.frame_buffer_size
             << (std::getenv("FRAME_STEP_SKIP_PNG") ? ", per-frame timestamps match (PNG comparison disabled)" : ", per-frame timestamps and both PNGs match")
             << "; endpoints, resume and right switching checked\n";

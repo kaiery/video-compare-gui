@@ -125,6 +125,10 @@ $(integration_bin): $(integration_obj) $(integration_app_obj)
 tests/integration_frame_step$(EXE): tests/integration_frame_step.o $(integration_app_obj)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
 
+.PHONY: video-loop-check
+video-loop-check: tests/integration_frame_step$(EXE)
+	@bash tests/check_video_loop.sh "$(CURDIR)/tests/integration_frame_step$(EXE)"
+
 .PHONY: frame-step-check
 frame-step-check: tests/integration_frame_step$(EXE)
 	@bash tests/check_frame_step.sh "$(CURDIR)/tests/integration_frame_step$(EXE)"

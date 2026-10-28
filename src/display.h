@@ -225,6 +225,9 @@ class Display {
   bool show_metadata_{false};
   bool quit_{false};
   bool play_{true};
+  bool play_toggle_requested_{false};
+  bool restart_from_beginning_{false};
+  bool video_loop_enabled_{false};
   Loop buffer_play_loop_mode_{Loop::Off};
   bool buffer_play_forward_{true};
   bool swap_left_right_{false};
@@ -518,6 +521,11 @@ class Display {
 
   bool get_quit() const;
   bool get_play() const;
+  void set_playing(bool playing);
+  bool get_play_toggle_requested() const;
+  bool get_restart_from_beginning() const;
+  bool get_video_loop_enabled() const;
+  void set_video_loop_enabled(bool enabled);
   Loop get_buffer_play_loop_mode() const;
   void set_buffer_play_loop_mode(const Loop& mode);
   bool get_buffer_play_forward() const;

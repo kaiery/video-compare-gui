@@ -80,8 +80,22 @@ try {
     $env:PATH = "$env:WINDIR/System32;$env:WINDIR"
     & "$package/video-compare.exe" --version
     if ($LASTEXITCODE -ne 0) { throw 'Standalone version check failed' }
-    & "$package/video-compare.exe" --help | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Standalone help check failed' }
+    # The CLI writes help to stderr even on success. Capture both streams
+    # directly so Windows PowerShell does not turn help into NativeCommandError.
+    $probe = New-Object Diagnostics.Process
+    $probe.StartInfo.FileName = "$package/video-compare.exe"
+    $probe.StartInfo.Arguments = '--help'
+    $probe.StartInfo.UseShellExecute = $false
+    $probe.StartInfo.CreateNoWindow = $true
+    $probe.StartInfo.RedirectStandardOutput = $true
+    $probe.StartInfo.RedirectStandardError = $true
+    try {
+        if (!$probe.Start()) { throw 'Cannot start help probe' }
+        $stdoutTask = $probe.StandardOutput.ReadToEndAsync()
+        $stderrTask = $probe.StandardError.ReadToEndAsync()
+        if (!$probe.WaitForExit(10000)) { $probe.Kill(); $probe.WaitForExit(); throw 'Help probe timed out' }
+        if ($probe.ExitCode -ne 0 -or ($stdoutTask.Result + $stderrTask.Result) -notmatch 'Usage:') { throw 'Standalone help check failed' }
+    } finally { $probe.Dispose() }
 } finally { $env:PATH = $savedPath }
 Push-Location $root
 try {

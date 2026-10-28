@@ -9,9 +9,9 @@ git clone https://github.com/kaiery/video-compare-gui.git
 cd video-compare-gui
 ```
 
-## 本体正式版：20260920-frame-step-cache
+## 本体正式版：20261029-video-loop
 
-Windows x64 便携发布包：`video-compare-20260920-frame-step-cache-windows-x64.zip`。本机构建产物位于 `dist/`，包含 Release 优化编译的 `video-compare.exe`、所需 DLL、许可证和使用说明；解压即可使用，无需安装编译器或开发工具。`dist/` 不纳入 Git，因此从源码仓库检出不会自动获得二进制文件。
+Windows x64 便携发布包：`video-compare-20261029-video-loop-windows-x64.zip`。本机构建产物位于 `dist/`，包含 Release 优化编译的 `video-compare.exe`、所需 DLL、许可证和使用说明；解压即可使用，无需安装编译器或开发工具。`dist/` 不纳入 Git，因此从源码仓库检出不会自动获得二进制文件。
 
 1. 将整个 ZIP 解压到一个独立目录，保留 EXE 和全部 DLL，不能只复制 EXE。
 2. 在 GUI 的“比较程序”中选择该目录的 `video-compare.exe`，选择视频后开始比较。GUI 与本体分别发布，本体包不包含 GUI。
@@ -22,9 +22,9 @@ Windows x64 便携发布包：`video-compare-20260920-frame-step-cache-windows-x
 .\video-compare.exe -- "D:\Videos\参考.mp4" "D:\Videos\待比较1.mp4" "D:\Videos\待比较2.mp4"
 ```
 
-本体是需要输入视频路径的播放器；双击无参数的 EXE 不会弹出视频选择框，需要图形化选择文件时请使用 GUI。版本检查应输出 `video-compare 20260920-frame-step-cache`。
+本体是需要输入视频路径的播放器；双击无参数的 EXE 不会弹出视频选择框，需要图形化选择文件时请使用 GUI。版本检查应输出 `video-compare 20261029-video-loop`。
 
-本版包含准确双向逐帧、播放结束后持续后退，以及退帧历史缓存优化。`A` / `Shift+A` 后退一参考帧，`D` / `Shift+D` 前进一参考帧，空格恢复播放。建议先保持默认 50 帧缓存；缓存耗尽时仍需重新解码，可能短暂停顿。
+本版新增整段循环与播放结束后空格重播，同时包含准确双向逐帧、播放结束后持续后退及退帧历史缓存优化。`A` / `Shift+A` 后退一参考帧，`D` / `Shift+D` 前进一参考帧，空格恢复播放。建议先保持默认 50 帧缓存；缓存耗尽时仍需重新解码，可能短暂停顿。
 
 同目录另提供对应工作区源码快照 `*-source.zip` 和 `*.sha256` 校验文件。详见 [正式版使用、构建与验收说明](docs/engine-release.md)。
 
@@ -54,7 +54,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\gui-launcher\tools\build.p
 2. 选择左侧参考视频，向右侧列表添加并启用一个或多个待比较视频。
 3. 设置比较选项，点击“校验与预览”，确认后点击“开始比较”。
 
-一般顺序播放请选择“连续播放（不循环）”；缓冲区循环默认只循环缓存中的 50 帧，不是循环整段视频。
+一般顺序播放请选择“连续播放（不循环）”。使用本版引擎时，在视频窗口按 `F5` 开启／关闭整段循环，开启后 HUD 显示 `LOOP`，播放到可比较片段末尾后所有输入重新从头播放，不受默认 50 帧缓存限制。按 `Home` 立即从头播放一次；播放结束后按空格也会从头重播。空格可暂停／恢复整段循环。长度不同的输入在最短可播放输入结束后一起重启；输入必须支持寻址。
+
+GUI 的循环方式下拉框以及 `,`、`.` 控制缓存循环，默认只循环缓存中的 50 帧。需要整段循环时，请在本体窗口使用 `F5`；按 `,` 或 `.` 会切回相应缓存循环并关闭整段循环。
 
 更多说明见 [GUI 使用与构建文档](gui-launcher/README.md)、[源码选项与验收覆盖表](gui-launcher/COVERAGE.md) 和 [GUI 控件映射](gui-launcher/P04-CONTROLS.md)。发布模板 `gui-launcher/release/` 按本项目约定仅在本机保留，不随 Git 提交；从 Git 检出后可直接构建和测试 GUI，生成发布压缩包前需另行准备模板。
 
@@ -260,7 +262,9 @@ see all supported options.
 
 - `H`: Toggle on-screen help text for controls
 - `V`: Toggle video info overlay
-- `Space`: Toggle play/pause
+- `Space`: Toggle play/pause; restart from beginning after end of video
+- `Home`: Restart all inputs from the beginning and play
+- `F5`: Toggle whole-video loop (independent of frame buffer size)
 - `,`: Toggle bidirectional in-buffer loop/pause
 - `.`: Toggle forward-only in-buffer loop/pause
 - `Escape`: Quit

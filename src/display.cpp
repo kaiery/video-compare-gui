@@ -2765,7 +2765,7 @@ bool Display::possibly_refresh(const AVFrame* left_frame, const AVFrame* right_f
       playback_speed_factor_str = "";
     }
 
-    const std::string united_playback_speed_str = string_sprintf("@%s%s", playback_speed_str.c_str(), playback_speed_factor_str.c_str());
+    const std::string united_playback_speed_str = string_sprintf("@%s%s%s", playback_speed_str.c_str(), playback_speed_factor_str.c_str(), video_loop_enabled_ ? " | LOOP" : "");
     text_surface = TTF_RenderText_Blended(small_font_, united_playback_speed_str.c_str(), PLAYBACK_SPEED_COLOR);
     SDL_Texture* playack_speed_text_texture = SDL_CreateTextureFromSurface(renderer_, text_surface);
     const int playack_speed_text_width = text_surface->w;
@@ -3101,6 +3101,8 @@ void Display::update_playback_speed(const float playback_speed_level_delta) {
 }
 
 void Display::begin_input_frame() {
+  play_toggle_requested_ = false;
+  restart_from_beginning_ = false;
   seek_relative_ = 0.0F;
   seek_from_start_ = false;
   frame_buffer_offset_delta_ = 0;
@@ -3343,15 +3345,31 @@ void Display::handle_event(const SDL_Event& event) {
           break;
         }
         case SDLK_SPACE:
-          play_ = !play_;
-          buffer_play_loop_mode_ = Loop::Off;
-          tick_playback_ = play_;
+          if (!event.key.repeat) {
+            play_toggle_requested_ = true;
+            set_playing(!play_);
+          }
+          break;
+        case SDLK_HOME:
+          if (!event.key.repeat) {
+            restart_from_beginning_ = true;
+            set_playing(true);
+          }
+          break;
+        case SDLK_F5:
+          if (!event.key.repeat) {
+            video_loop_enabled_ = !video_loop_enabled_;
+            if (video_loop_enabled_) set_playing(true);
+            notify_user(video_loop_enabled_ ? "Whole-video loop: ON" : "Whole-video loop: OFF");
+          }
           break;
         case SDLK_COMMA:
         case SDLK_KP_COMMA:
+          video_loop_enabled_ = false;
           set_buffer_play_loop_mode(buffer_play_loop_mode_ != Loop::PingPong ? Loop::PingPong : Loop::Off);
           break;
         case SDLK_PERIOD:
+          video_loop_enabled_ = false;
           set_buffer_play_loop_mode(buffer_play_loop_mode_ != Loop::ForwardOnly ? Loop::ForwardOnly : Loop::Off);
           break;
         case SDLK_F1:
@@ -3727,6 +3745,17 @@ bool Display::get_quit() const {
 bool Display::get_play() const {
   return play_;
 }
+
+void Display::set_playing(bool playing) {
+  play_ = playing;
+  buffer_play_loop_mode_ = Loop::Off;
+  tick_playback_ = true;
+}
+
+bool Display::get_play_toggle_requested() const { return play_toggle_requested_; }
+bool Display::get_restart_from_beginning() const { return restart_from_beginning_; }
+bool Display::get_video_loop_enabled() const { return video_loop_enabled_; }
+void Display::set_video_loop_enabled(bool enabled) { video_loop_enabled_ = enabled; }
 
 Display::Loop Display::get_buffer_play_loop_mode() const {
   return buffer_play_loop_mode_;
